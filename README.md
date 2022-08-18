@@ -1,5 +1,5 @@
 # ParallelRedistricting
-This repository contains the code for creating solutions to the political redistricting problem using the SFSR-G algorithm described in: Haas, C., Miller, P., Kimbrough, S.O. (2022). An algorithmic approach to legislative apportionment bases and redistricting. Journal of Electoral Studies. Elsevier. 
+This repository contains the code for creating solutions to the political redistricting problem using the SFSR-G algorithm described in: \textit{Haas, C., Miller, P., Kimbrough, S.O. (2022). An algorithmic approach to legislative apportionment bases and redistricting. Journal of Electoral Studies. Elsevier.} 
 
 # README for Redistricting Program
 
