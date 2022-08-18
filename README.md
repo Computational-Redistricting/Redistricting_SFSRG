@@ -1,5 +1,5 @@
 # ParallelRedistricting
-This repository contains the code for creating solutions to the political redistricting problem using the SFSR-G algorithm described in: *Haas, C., Miller, P., Kimbrough, S.O. (2022). An algorithmic approach to legislative apportionment bases and redistricting. Journal of Electoral Studies. Elsevier.* 
+This repository contains the code for creating solutions to the political redistricting problem using the SFSR-G algorithm described in: *Haas, C.; Miller, P.; Kimbrough, S.O. (2022). An algorithmic approach to legislative apportionment bases and redistricting. Journal of Electoral Studies. Elsevier.* 
 
 # README for Redistricting Program
 
@@ -18,10 +18,8 @@ The Redistricting Python program consists of several building blocks:
 
 # Running the program
 To use the program, follow these steps:
-# Running the program
-To use the program, follow these steps:
-1) Specify the extent of the run in the parameter file 'params.json':
-	State, State-ID, and state_abr need to refer to the State for which the analysis is run. Examples: "Pennsylvania", 42, "PA" refers to Pennsylvania. 
+1. Specify the extent of the run in the parameter file 'params.json':
+	- State, State-ID, and state_abr need to refer to the State for which the analysis is run. Examples: "Pennsylvania", 42, "PA" refers to Pennsylvania. 
 	These parameters are used to download census tract-level data from the Census API as well as ACS 2018
 	Please refer to the StateCodes.txt for the specific IDs
 	
@@ -40,7 +38,7 @@ To use the program, follow these steps:
 	- data_id_column: the column name of the demographic data that corresponds to the precinct IDs. Necessary to join with shapefile data. For Census data, this is "GEOID10". If Census data is used this is not required and will be set automatically.
 	- population_column: the column name of the demographic data that is used to calculate precinct and district populations. For Census data, this is "total_population". If Census data is used this is not required and will be set automatically.
 
-2)	In the main level directory of the python program, run 'python Main.py'
+2. In the main level directory of the python program, run 'python Main.py'
 First, if no manual shapefiles are provided (shapefile_location = "", data_location = ""), it will create a connection to the Census API and download the Census and ACS 2018 data for the specified State.
 Note: If the data for the State already exists in the Data/ folder, this will be skipped to avoid unnecessary downloads / load times.
 Also, sometimes this can cause an error message on the side of the Census API, e.g., when too many calls are made or when the website does not respond. 
