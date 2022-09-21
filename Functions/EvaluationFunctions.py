@@ -106,17 +106,6 @@ def check_contiguity(district_df):
     return True
 
 
-def calculate_community_of_interest_score(num_district, district_df):
-    """
-    This function calculates the community of interest score as defined in Bozkaya 2003 for a specific district
-    :param num_district: the specific district for which compactness is calculated
-    :param district_df: the dataframe that maps the census tract IDs with the district number
-    :return: the integrity score for a given community of interest definition and a specified district
-    """
-    score = 0
-    return score
-
-
 def calculate_socioeconomic_homogeneity(district_df):
     """
     This function calculates the socioeconomic homogeneity as defined in Bozkaya 2003 for a specific district
