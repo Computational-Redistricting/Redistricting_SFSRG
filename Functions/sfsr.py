@@ -12,7 +12,7 @@ import copy
 import os
 import datetime
 import re
-import pysal as ps
+import libpysal as lp
 import warnings
 from functools import partial
 import math
@@ -44,7 +44,7 @@ def integrate_disconnected_components(data_table):
     :param data_table: The geodataframe, potentially including islands and disconnected components
     :return: a geo dataframe without disconnected components or islands
     '''
-    weightsDF = ps.lib.weights.Rook.from_dataframe(data_table, ids=data_table.index.tolist())
+    weightsDF = lp.weights.Rook.from_dataframe(data_table, ids=data_table.index.tolist())
     u, count = np.unique(weightsDF.component_labels, return_counts=True)
     print(u, count)
     count_sort_ind = np.argsort(-count)
@@ -334,7 +334,7 @@ def seed_fill_single_blockgroup(initialDF, numberSubgroupsPerBlockgroup):
     :return: a GeoDataFrame with precinct-district mappings that represents a contiguous assignment
     '''
     assignmentsDF = initialDF.copy()
-    w_df = ps.lib.weights.Rook.from_dataframe(assignmentsDF, ids=assignmentsDF.index.tolist())
+    w_df = lp.weights.Rook.from_dataframe(assignmentsDF, ids=assignmentsDF.index.tolist())
     unassigned = []
     assignedDict = {}
     precinctList = list(assignmentsDF.index)
@@ -431,7 +431,7 @@ def seed_fill_single_blockgroup(initialDF, numberSubgroupsPerBlockgroup):
     return newDF
 
 
-def seed_fill(assignmentsDF, w_df, numDistricts, use_original_sfsr):
+def seed_fill(assignmentsDF, w_df, numDistricts, use_original_sfsr, population_column):
     '''
     Runs the initial seed and fill step of the SFSR procedure
     First, random precincts are chosen and seeded with different district IDs
@@ -503,7 +503,7 @@ def seed_fill(assignmentsDF, w_df, numDistricts, use_original_sfsr):
 
         else:
             # alternatively, we can add to the smallest of the groups to aim for a more balanced distribution
-            districtPops = getDistrictPopsDict(assignmentsDF, districtList)
+            districtPops = getDistrictPopsDict(assignmentsDF, districtList, population_column=population_column)
 
             districtPopsSorted = {k: v for k, v in sorted(districtPops.items(), key=lambda item: item[1])}
 
@@ -811,7 +811,7 @@ def checkDistrictContiguity(districtNum,districtAssignmentDF):
         # Get a DataFrame for the district we wish to examine.
         aDistrictDF = districtAssignmentDF[districtAssignmentDF['District'] == districtNum]
 
-        w_df = ps.lib.weights.Rook.from_dataframe(aDistrictDF)
+        w_df = lp.weights.Rook.from_dataframe(aDistrictDF)
 
         if w_df.n_components == 1: # Every unit is reachable!!
             return ([],True)
@@ -886,7 +886,7 @@ def shiftWhile(toShiftDF,idealPop,maxPop,minPop, topMaxPerCent,bottomMinPerCent,
         if verbose:
             if count % 300 == 0:
                 print(count)
-                balance = calculate_population_equality(toShiftDF, population_column)
+                balance = calculate_population_equality(toShiftDF, True, population_column)
                 print('District populations: {}'.format(getDistrictPops(toShiftDF,districtList, population_column)))
                 print('current population balance: ', balance)
                 lower, upper = calculate_population_tolerance(toShiftDF, population_column)
@@ -1078,7 +1078,7 @@ def shiftRepair(toShiftRepairDF,
     done = False
     while not done:
         startTime = time.time()
-        toShiftRepairDF = seed_fill(orig_df, weightsDF, len(districtList), use_original_sfsr)
+        toShiftRepairDF = seed_fill(orig_df, weightsDF, len(districtList), use_original_sfsr, population_column)
 
         while time.time() < startTime + timeout:
             # print('Top of the while loop of shiftRepair. District populations: {}'.format(getDistrictPops(toShiftRepairDF,districtList)))
@@ -1141,7 +1141,7 @@ def go(idealPop,minPop,maxPop,numDistricts,topMaxPerCent,bottomMinPerCent,
     # assignmentsDF = seed_fill(assignmentsDF_bg, assignmentsDF, weightsDF, numDistricts)
     # print('level: ', level)
 
-    weightsDF = ps.lib.weights.Rook.from_dataframe(assignmentsDF, ids=assignmentsDF.index.tolist())
+    weightsDF = lp.weights.Rook.from_dataframe(assignmentsDF, ids=assignmentsDF.index.tolist())
 
     u, count = np.unique(weightsDF.component_labels, return_counts=True)
 
@@ -1161,9 +1161,9 @@ def go(idealPop,minPop,maxPop,numDistricts,topMaxPerCent,bottomMinPerCent,
     print('smaller component: ', toReturn)
 
     if level != 'block':
-        assignmentsDF = seed_fill(assignmentsDF, weightsDF, numDistricts, use_original_sfsr)
+        assignmentsDF = seed_fill(assignmentsDF, weightsDF, numDistricts, use_original_sfsr, population_column)
     else:
-        weightsDF_bg = ps.lib.weights.Rook.from_dataframe(assignmentsDF_bg, ids=assignmentsDF_bg.index.tolist())
+        weightsDF_bg = lp.weights.Rook.from_dataframe(assignmentsDF_bg, ids=assignmentsDF_bg.index.tolist())
         # calculate blockgroup based assignments first
         assignmentsDF_bg = seed_fill(assignmentsDF_bg, weightsDF_bg, numDistricts)
 
@@ -1348,8 +1348,8 @@ class SFSR():
         if verbose:
             print(startTime, 'startTime')
             print('minPop {}, maxPop {}, total pop1 {}, total pop2 {}'.format(self.minPop, self.maxPop,
-                                                                              self.assignmentsDF.total_population.sum(), newDF[
-                                                                                  'total_population'].sum()))
+                                                                              self.assignmentsDF[self.population_column].sum(), newDF[
+                                                                                  self.population_column].sum()))
         # write the runtime information to a file
         runtime_path = self.pathToOutputData[:12] + '/Runtimes.csv'
         # if the file exists, append, otherwise create the file
@@ -1374,5 +1374,3 @@ class SFSR():
         :param verbose: parameter if additional information should be printed
         '''
         pool.map(partial(self.basicgo_single, verbose=verbose), range(num_runs))
-
-
