@@ -179,16 +179,6 @@ def prepare_shapefile_data_table(shapefile_location, data_location, shapefile_id
 
             # identify common columns to avoid column duplication
             common_col_names = np.intersect1d(data_table.columns, census.columns).tolist()
-            # left_names = copy.deepcopy(common_col_names)
-            # right_names = copy.deepcopy(common_col_names)
-            # if shapefile_id_column not in common_col_names:
-            #     left_names.append(shapefile_id_column)
-            # if data_id_column not in common_col_names:
-            #     right_names.append(data_id_column)
-            #
-            print("common col names: ", common_col_names)
-            # print("left_names: ", left_names)
-            # print("right_names: ", right_names)
 
             # make sure the columns have the same type
             for name in common_col_names:
@@ -201,7 +191,6 @@ def prepare_shapefile_data_table(shapefile_location, data_location, shapefile_id
         print(fe)
         print('Demographic data cannot be read from location: ', data_location)
 
-    print(data_table.shape)
     data_table, disconnected_components = integrate_disconnected_components(data_table,
                                                                             population_column=population_column)
 
@@ -693,10 +682,10 @@ def shift(assignedDF, idealPop, minPop, maxPop, weightsDF, Wmatrix, ids, populat
 
         district = random.choice(district_candidates)
 
-        # precinctList = get_border_AAU_list(assignmentDF=assignedDFTemp, adjMatrix=Wmatrix, adjMatrixIDs=ids,
-        #                                    district=district)
-        precinctList = get_border_AAU_List_matrix(weightsDF=weightsDF, assignmentDF=assignedDFTemp,
-                                                  district=district)
+        precinctList = get_border_AAU_list(assignmentDF=assignedDFTemp, adjMatrix=Wmatrix, adjMatrixIDs=ids,
+                                           district=district)
+        # precinctList = get_border_AAU_List_matrix(weightsDF=weightsDF, assignmentDF=assignedDFTemp,
+        #                                           district=district)
     else:
         precinctList = assignedDFTemp.index.tolist()
 
@@ -1215,7 +1204,7 @@ def go(idealPop,minPop,maxPop,numDistricts,topMaxPerCent,bottomMinPerCent,
     # print('largest component label: ', largest_component_label , ' with how many units? ', len(np.where(weightsDF.component_labels == largest_component_label)))
     # print('smaller component: ', toReturn)
 
-    assignmentsDF = seed_fill(assignmentsDF, weightsDF, numDistricts, use_original_sfsr, population_column)
+    # assignmentsDF = seed_fill(assignmentsDF, weightsDF, numDistricts, use_original_sfsr, population_column)
 
     ###################### shiftRepair #######################
     # The heart of the procedure.
