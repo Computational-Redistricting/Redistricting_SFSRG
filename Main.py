@@ -184,6 +184,7 @@ def remove_duplicates_from_path(solution_directory, id_column=None):
     all_files = [item for item in all_files if "runlogs.csv" not in item]
     all_files = [item for item in all_files if "Runtimes.csv" not in item]
     all_files = [item for item in all_files if "Plan_Metrics.csv" not in item]
+    all_files = [item for item in all_files if "Costs.csv" not in item]
 
     if len(all_files) == 0:
         return
