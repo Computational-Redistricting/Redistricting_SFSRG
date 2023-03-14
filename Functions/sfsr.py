@@ -4,8 +4,6 @@
 This is the new class for the SFSR algorithm exlusively using the pysal library to calculate and use neighbors
 """
 import random
-
-import numpy
 import pandas as pd
 import numpy as np
 import copy
@@ -17,7 +15,6 @@ import warnings
 from functools import partial
 import math
 import geopandas as gp
-from pathlib import Path
 from scipy.sparse.csgraph import connected_components
 import time
 from shapely.geometry.polygon import Polygon
@@ -35,18 +32,19 @@ count_shift = 0
 count_repair = 0
 
 
-def integrate_disconnected_components(data_table):
+def integrate_disconnected_components(data_table, population_column="total_population"):
     '''
     This function identifies disconnected components and island, if they exist
     It then calculates the pairwise distances between the centroid(s) of these units and the main component (mainland)
     units/precincts
     Finally, it adds the population, geometry, and other information to the closest precinct
     :param data_table: The geodataframe, potentially including islands and disconnected components
+    :param population_column: the name of the main population column to integrate
     :return: a geo dataframe without disconnected components or islands
     '''
     weightsDF = lp.weights.Rook.from_dataframe(data_table, ids=data_table.index.tolist())
     u, count = np.unique(weightsDF.component_labels, return_counts=True)
-    print(u, count)
+
     count_sort_ind = np.argsort(-count)
     # now, the first count_sort_ind has the component with the largest number of units. we can use the rest to be added
     # to the repair list
@@ -57,74 +55,92 @@ def integrate_disconnected_components(data_table):
         # print((aDistrictDF.index[i], aDistrictDF.iloc[ix]['GEOID']))
         toReturn.append(weightsDF.id_order[ix])
     data_table_large_component = data_table.loc[~data_table.index.isin(toReturn)]
-    # print(data_table_large_component['geometry'])
-    # print(toReturn)
-    # centroids = data_table_large_component['geometry'].centroid
-    # print(centroids)
+    disconnected_components = []
     for ix in toReturn:
-
         # print(ix)
         # print(data_table.loc[ix,'geometry'].centroid)
         # print(data_table_large_component['geometry'])
-        local_centroid = data_table.loc[ix,'geometry'].centroid
+        local_centroid = data_table.loc[ix, 'geometry'].centroid
         distances = [local_centroid.distance(centroid2) for centroid2 in
                      data_table_large_component['geometry'].centroid]
         min_distance_index = distances.index(min(distances))
         min_distance_index = data_table_large_component.index.values[min_distance_index]
+
+        # add this information to save which GEOID was added to a GEOID in the connected component
+        disconnected_components.append([ix, min_distance_index])
+
         # print(min_distance_index)
-        temp_value = data_table_large_component.loc[min_distance_index,'geometry'].union(
-            data_table.loc[ix,'geometry'])
-        data_table_large_component.loc[min_distance_index]['geometry'] = temp_value
+        data_table_large_component.loc[min_distance_index]['geometry'] = \
+            data_table_large_component.loc[min_distance_index, 'geometry'].union(
+            data_table.loc[ix, 'geometry'])
 
-        temp_value = data_table_large_component.loc[min_distance_index, 'total_population'] + data_table.loc[
-            ix, 'total_population']
-        data_table_large_component.loc[min_distance_index, 'total_population'] = temp_value
+        data_table_large_component.loc[min_distance_index, population_column] = \
+            data_table_large_component.loc[min_distance_index, population_column] + data_table.loc[
+            ix, population_column]
 
-        temp_value = data_table_large_component.loc[min_distance_index, 'total_population_voting_age'] + \
-                     data_table.loc[ix, 'total_population_voting_age']
-        data_table_large_component.loc[min_distance_index, 'total_population_voting_age'] = temp_value
+        if ("total_population" in data_table.columns) and (population_column != "total_population"):
+            data_table_large_component.loc[min_distance_index, 'total_population'] = \
+                data_table_large_component.loc[min_distance_index, 'total_population'] + data_table.loc[
+                ix, 'total_population']
 
-        temp_value = data_table_large_component.loc[min_distance_index, 'median_income'] + data_table.loc[
-            ix, 'median_income']
-        data_table_large_component.loc[min_distance_index, 'median_income'] = temp_value
+        if "total_population_voting_age" in data_table.columns:
+            data_table_large_component.loc[min_distance_index, 'total_population_voting_age'] = \
+                data_table_large_component.loc[min_distance_index, 'total_population_voting_age'] + \
+                         data_table.loc[ix, 'total_population_voting_age']
 
-        temp_value = data_table_large_component.loc[min_distance_index, 'median_income_voting_age'] + \
-                     data_table.loc[ix, 'median_income_voting_age']
-        data_table_large_component.loc[min_distance_index, 'median_income_voting_age'] = temp_value
+        if "median_income" in data_table.columns:
+            data_table_large_component.loc[min_distance_index, 'median_income'] = \
+                data_table_large_component.loc[min_distance_index, 'median_income'] + data_table.loc[
+                ix, 'median_income']
 
-        temp_value = data_table_large_component.loc[min_distance_index, 'white_population'] + data_table.loc[
-            ix, 'white_population']
-        data_table_large_component.loc[min_distance_index, 'white_population'] = temp_value
+        if "median_income_voting_age" in data_table.columns:
+            data_table_large_component.loc[min_distance_index, 'median_income_voting_age'] = \
+                data_table_large_component.loc[min_distance_index, 'median_income_voting_age'] + \
+                         data_table.loc[ix, 'median_income_voting_age']
 
-        temp_value = data_table_large_component.loc[min_distance_index, 'black_population'] + data_table.loc[
-            ix, 'black_population']
-        data_table_large_component.loc[min_distance_index, 'black_population'] = temp_value
+        if "white_population" in data_table.columns:
+            data_table_large_component.loc[min_distance_index, 'white_population'] = \
+                data_table_large_component.loc[min_distance_index, 'white_population'] + data_table.loc[
+                ix, 'white_population']
 
-        temp_value = data_table_large_component.loc[min_distance_index, 'latino_population'] + data_table.loc[
-            ix, 'latino_population']
-        data_table_large_component.loc[min_distance_index, 'latino_population'] = temp_value
+        if "black_population" in data_table.columns:
+            data_table_large_component.loc[min_distance_index, 'black_population'] = \
+                data_table_large_component.loc[min_distance_index, 'black_population'] + data_table.loc[
+                ix, 'black_population']
 
-        temp_value = data_table_large_component.loc[min_distance_index, 'other_population'] + data_table.loc[
-            ix, 'other_population']
-        data_table_large_component.loc[min_distance_index, 'other_population'] = temp_value
+        if "latino_population" in data_table.columns:
+            data_table_large_component.loc[min_distance_index, 'latino_population'] = \
+                data_table_large_component.loc[min_distance_index, 'latino_population'] + data_table.loc[
+                ix, 'latino_population']
 
-    return data_table_large_component
+        if "other_population" in data_table.columns:
+            data_table_large_component.loc[min_distance_index, 'other_population'] = \
+                data_table_large_component.loc[min_distance_index, 'other_population'] + data_table.loc[
+                ix, 'other_population']
+
+    # convert disconnected component data to data frame
+    disconnected_components_df = pd.DataFrame(disconnected_components, columns=['Initial_GEOID', 'Merged_GEOID'])
+
+    return data_table_large_component, disconnected_components_df
 
 
-def prepare_shapefile_data_table(shapefile_location, data_location, level='tract', shapefile_id_column=None,
-                                 data_id_column=None):
+def prepare_shapefile_data_table(shapefile_location, data_location, shapefile_id_column=None,
+                                 data_id_column=None, population_column='total_population'):
     '''
     This function joins the shapefile with the demographic data based on standard or custom id columns
     :param shapefile_location: the location of the shapefile
     :param data_location: the location of the demographic data file
-    :param level: the analysis level. either tract or blockgroup
     :param shapefile_id_column: the name of the column with the precinct ids. if none, GEOID10 is used
     :param data_id_column: the name of the column with the precinct ids. if none, GEOID10 is used
+    :param population_column: the name of the population column in case population data need to be aggregated
     :return: a combined GeoDataFrame based on the shapefile and demographic data file
     '''
     # read in the shapefile
+
+    data_table = None
+
     try:
-        data_table = gp.read_file(shapefile_location)
+        data_table = gp.read_file(shapefile_location, encoding='utf-8')
 
         # project it to the 3857 (Mercator) CRS for more accurate boundary calculations
         data_table = data_table.to_crs(epsg=3857)
@@ -142,19 +158,8 @@ def prepare_shapefile_data_table(shapefile_location, data_location, level='tract
         #         print(multipolygons)
         data_table['geometry'] = gp.GeoSeries(multipolygons, index=data_table.geometry.index)
 
-        territory_id = [1] * data_table.shape[0]
-
-        # calculate the state perimeter
-        data_table_perimeter = data_table.copy(deep=True)
-        data_table_perimeter['territory'] = territory_id
-        data_table_agg = data_table_perimeter.dissolve(by='territory')
-        state_perimeter = data_table_agg.length
-
         # merge with additional census data
-        if level == 'block':
-            data_table[shapefile_id_column] = data_table['BLOCKID10'].astype(np.int64)
-        else:
-            data_table[shapefile_id_column] = data_table[shapefile_id_column].astype(np.int64)
+        data_table[shapefile_id_column] = data_table[shapefile_id_column].astype(str)
 
         data_table.sort_values(by=shapefile_id_column)
     except FileNotFoundError as fe:
@@ -165,17 +170,42 @@ def prepare_shapefile_data_table(shapefile_location, data_location, level='tract
         print('column ', shapefile_id_column, ' not found in shapefile')
 
     try:
-        census = pd.read_csv(data_location)
+        if data_location is not None and data_location != "":
+            census = pd.read_csv(data_location)
+            census[data_id_column] = census[data_id_column].astype(str)
 
-        data_table = pd.merge(data_table, census, left_on=shapefile_id_column, right_on=data_id_column)
-        data_table.set_index(shapefile_id_column, inplace=True)
+            if shapefile_id_column not in census.columns:
+                census[shapefile_id_column] = census[data_id_column]
+
+            # identify common columns to avoid column duplication
+            common_col_names = np.intersect1d(data_table.columns, census.columns).tolist()
+            # left_names = copy.deepcopy(common_col_names)
+            # right_names = copy.deepcopy(common_col_names)
+            # if shapefile_id_column not in common_col_names:
+            #     left_names.append(shapefile_id_column)
+            # if data_id_column not in common_col_names:
+            #     right_names.append(data_id_column)
+            #
+            print("common col names: ", common_col_names)
+            # print("left_names: ", left_names)
+            # print("right_names: ", right_names)
+
+            # make sure the columns have the same type
+            for name in common_col_names:
+                data_table[name] = data_table[name].astype(census[name].dtype)
+
+            # data_table = pd.merge(data_table, census, left_on=left_names, right_on=right_names)
+            data_table = pd.merge(data_table, census, left_on=common_col_names, right_on=common_col_names)
+            data_table.set_index(shapefile_id_column, inplace=True)
     except FileNotFoundError as fe:
         print(fe)
         print('Demographic data cannot be read from location: ', data_location)
 
-    data_table = integrate_disconnected_components(data_table)
+    print(data_table.shape)
+    data_table, disconnected_components = integrate_disconnected_components(data_table,
+                                                                            population_column=population_column)
 
-    return data_table, state_perimeter
+    return data_table
 
 
 def first_n_digits(num, n):
@@ -308,7 +338,6 @@ def fastContiguityCheckForChangedDistrict(weights, listOfPrecincts):
     This is a fast method of checking if a list of precincts is contiguous by using the sparse matrix from weights
     The list of precincts needs to be a subset of the id's of the weights object
     :param weights:
-    :param assignmentsDF:
     :param listOfPrecincts:
     :return:
     '''
@@ -459,7 +488,7 @@ def seed_fill(assignmentsDF, w_df, numDistricts, use_original_sfsr, population_c
 
     # Shuffle the list. shuffle works in place.
     random.shuffle(precinctList)
-    for district in range(1, numDistricts + 1):
+    for district in districtList:
         assignmentsDF.loc[precinctList[district], 'District'] = district
 
     for item in assignmentsDF.index:
@@ -598,6 +627,32 @@ def get_border_AAU_list(assignmentDF, adjMatrix, adjMatrixIDs, district):
     return border
 
 
+def get_border_AAU_List_matrix(weightsDF, assignmentDF, district):
+
+    # get list of AAUs
+    AAUList = assignmentDF[assignmentDF['District'] == district].index.tolist()
+
+    # get indices of AAUs
+    idxs = np.searchsorted(weightsDF.id_order, AAUList)
+
+    mat = weightsDF.sparse.tolil()
+
+    # mat = weightsDF.sparse
+    rowadj = mat[idxs, :]
+
+    rowadj[:, idxs] = 0
+
+    flat_list = [item for sublist in rowadj[:, :].sum(axis=1).tolist() for item in sublist]
+
+    indices = np.nonzero(flat_list)
+    indices = indices[0].tolist()
+
+    # get the actual indices
+    list_of_border_AAUs = [AAUList[i] for i in indices]
+
+    return list_of_border_AAUs
+
+
 def shift(assignedDF, idealPop, minPop, maxPop, weightsDF, Wmatrix, ids, population_column, only_nonideal_population_districts=False,
           only_contiguous_shifts=False, only_opposite_population_shifts=True, only_border_districts=True):
     '''
@@ -638,8 +693,10 @@ def shift(assignedDF, idealPop, minPop, maxPop, weightsDF, Wmatrix, ids, populat
 
         district = random.choice(district_candidates)
 
-        precinctList = get_border_AAU_list(assignmentDF=assignedDFTemp, adjMatrix=Wmatrix, adjMatrixIDs=ids,
-                                           district=district)
+        # precinctList = get_border_AAU_list(assignmentDF=assignedDFTemp, adjMatrix=Wmatrix, adjMatrixIDs=ids,
+        #                                    district=district)
+        precinctList = get_border_AAU_List_matrix(weightsDF=weightsDF, assignmentDF=assignedDFTemp,
+                                                  district=district)
     else:
         precinctList = assignedDFTemp.index.tolist()
 
@@ -856,7 +913,6 @@ def shiftWhile(toShiftDF,idealPop,maxPop,minPop, topMaxPerCent,bottomMinPerCent,
     The main function that calls the shift() procedure until the district populations are within
     the population tolerance
     :param toShiftDF: the current GeoDataFrame with precinct-district assignments
-    :param numPrecincts: the number of precints
     :param idealPop: the ideal population per district
     :param maxPop: the maximum allowed population per district
     :param minPop: the minimum allowed population per district
@@ -1054,7 +1110,6 @@ def shiftRepair(toShiftRepairDF,
     Then repair() if not contiguous. Embedded in a
     while loop.
     :param toShiftRepairDF: the current GeoDataFrame with precinct-district information
-    :param numPrecincts: the number of precincts
     :param idealPop: the ideal population per district
     :param maxPop: the maximum population per district
     :param minPoP: the minimum population per district
@@ -1107,14 +1162,15 @@ def shiftRepair(toShiftRepairDF,
         # new: if the returned assignmentDF is not contiguous and /or not within population tolerance, repeat process
         if not popSizeOK(toShiftRepairDF, idealPop, topMaxPerCent, bottomMinPerCent, districtList, population_column) or \
             not checkPlanContiguity(toShiftRepairDF, districtList):
-            toShiftRepairDF = seed_fill(orig_df, weightsDF, len(districtList), use_original_sfsr)
+            toShiftRepairDF = seed_fill(orig_df, weightsDF, len(districtList), use_original_sfsr, population_column)
 
     # print('*****Success: Finishing shiftRepair() at {}'.format(str(datetime.datetime.now())))
     return toShiftRepairDF
 
 
 def go(idealPop,minPop,maxPop,numDistricts,topMaxPerCent,bottomMinPerCent,
-           numPrecincts,districtList,assignmentsDF,assignmentsDF_bg,level, use_original_sfsr,verbose,population_column, seed=None):
+       districtList,assignmentsDF, use_original_sfsr,weightsDF,
+       verbose,population_column, seed=None):
     '''
     The key procedure.  First we initialize, then
     seed, then fill, then shiftRepair until done.
@@ -1124,7 +1180,6 @@ def go(idealPop,minPop,maxPop,numDistricts,topMaxPerCent,bottomMinPerCent,
     :param numDistricts: the number of districts to be created
     :param topMaxPerCent: the maximum positive deviation from the ideal population
     :param bottomMinPerCent: the maximum negative deviation from the ideal population
-    :param numPrecincts: the number of precincts
     :param districtList: the list of districts
     :param assignmentsDF: a GeoDataFrame with precinct-district assignments
     :param verbose: parameter if additional information should be printed
@@ -1141,52 +1196,31 @@ def go(idealPop,minPop,maxPop,numDistricts,topMaxPerCent,bottomMinPerCent,
     # assignmentsDF = seed_fill(assignmentsDF_bg, assignmentsDF, weightsDF, numDistricts)
     # print('level: ', level)
 
-    weightsDF = lp.weights.Rook.from_dataframe(assignmentsDF, ids=assignmentsDF.index.tolist())
+    # weightsDF = lp.weights.Rook.from_dataframe(assignmentsDF, ids=assignmentsDF.index.tolist())
 
-    u, count = np.unique(weightsDF.component_labels, return_counts=True)
+    # u, count = np.unique(weightsDF.component_labels, return_counts=True)
+    #
+    # count_sort_ind = np.argsort(-count)
+    #
+    # # now, the first count_sort_ind has the component with the largest number of units. we can use the rest to be added to the repair list
+    # toReturn = []
+    # largest_component_label = u[count_sort_ind][0]
+    # smaller_component_index = np.where(weightsDF.component_labels != largest_component_label)
+    #
+    # # for each district in the non-connected components, add them to the repair list
+    # for i, ix in enumerate(smaller_component_index[0]):
+    #     # print((aDistrictDF.index[i], aDistrictDF.iloc[ix]['GEOID']))
+    #     toReturn.append([assignmentsDF.iloc[ix]['GEOID'], weightsDF.component_labels[ix]])
+    #
+    # print('largest component label: ', largest_component_label , ' with how many units? ', len(np.where(weightsDF.component_labels == largest_component_label)))
+    # print('smaller component: ', toReturn)
 
-    count_sort_ind = np.argsort(-count)
-
-    # now, the first count_sort_ind has the component with the largest number of units. we can use the rest to be added to the repair list
-    toReturn = []
-    largest_component_label = u[count_sort_ind][0]
-    smaller_component_index = np.where(weightsDF.component_labels != largest_component_label)
-
-    # for each district in the non-connected components, add them to the repair list
-    for i, ix in enumerate(smaller_component_index[0]):
-        # print((aDistrictDF.index[i], aDistrictDF.iloc[ix]['GEOID']))
-        toReturn.append([assignmentsDF.iloc[ix]['GEOID'], weightsDF.component_labels[ix]])
-
-    print('largest component label: ', largest_component_label , ' with how many units? ', len(np.where(weightsDF.component_labels == largest_component_label)))
-    print('smaller component: ', toReturn)
-
-    if level != 'block':
-        assignmentsDF = seed_fill(assignmentsDF, weightsDF, numDistricts, use_original_sfsr, population_column)
-    else:
-        weightsDF_bg = lp.weights.Rook.from_dataframe(assignmentsDF_bg, ids=assignmentsDF_bg.index.tolist())
-        # calculate blockgroup based assignments first
-        assignmentsDF_bg = seed_fill(assignmentsDF_bg, weightsDF_bg, numDistricts)
-
-        assignmentsDF['GEOID'] = assignmentsDF.index.tolist()
-
-        assignmentsDF['GEOID'] = assignmentsDF.apply(lambda x: first_n_digits(x['GEOID'], 12), axis=1)
-        # then, split into groups
-        newDF = gp.GeoDataFrame()
-        num_subgroups = 4
-        blockgroups = assignmentsDF_bg.GEOID.unique()
-        print(blockgroups)
-        for blockgroup in blockgroups:
-            print('GEOID: ', blockgroup)
-            newDF = newDF.append(
-                seed_fill_single_blockgroup(assignmentsDF[assignmentsDF['GEOID'] == blockgroup], num_subgroups),
-                ignore_index=True)
-        assignmentsDF = newDF
+    assignmentsDF = seed_fill(assignmentsDF, weightsDF, numDistricts, use_original_sfsr, population_column)
 
     ###################### shiftRepair #######################
     # The heart of the procedure.
-    toReturnDF = shiftRepair(assignmentsDF,
-               idealPop,maxPop,minPop,
-               topMaxPerCent,bottomMinPerCent,districtList,weightsDF,use_original_sfsr,verbose, population_column)
+    toReturnDF = shiftRepair(assignmentsDF, idealPop, maxPop, minPop, topMaxPerCent,
+                             bottomMinPerCent,districtList,weightsDF,use_original_sfsr,verbose, population_column)
     return toReturnDF
 
 
@@ -1196,8 +1230,7 @@ class SFSR():
                  nDistricts = 17,tolerance=0.05,
                  neighborsType='rook',
                  pathToOutputData='Solutions/PA/SFSR/Tracts/',
-                 cvap='False', level='blockgroup', shapefile_location=None, shapefile_location_blockgroups=None,
-                 data_location=None,data_location_blockgroups=None, shapefile_id_column=None, data_id_column=None,
+                 cvap='False', level='blockgroup', data_table=None, shapefile_id_column=None, data_id_column=None,
                  population_column='total_population', use_original_sfsr='True'
                  ):
 
@@ -1212,12 +1245,8 @@ class SFSR():
        self.pathToOutputData = pathToOutputData
        self.cvap = cvap
        self.level = level
-       # self.geo_data = geo_data
-       # self.geo_data_bg = geo_data_bg
-       self.shapefile_location = shapefile_location
-       self.shapefile_location_blockgroups = shapefile_location_blockgroups
-       self.data_location = data_location
-       self.data_location_blockgroups = data_location_blockgroups
+       self.data_table = data_table
+
        if shapefile_id_column is None or shapefile_id_column == "":
            self.shapefile_id_column = 'GEOID10'
        else:
@@ -1259,34 +1288,25 @@ class SFSR():
         Sets up files and runs the procedure.
         '''
         # prepare the initial data from the specified locations
-        self.data_table, self.state_perimeter = prepare_shapefile_data_table(shapefile_location=self.shapefile_location,
-                                                                   data_location=self.data_location,
-                                                                   level=self.level,
-                                                                   shapefile_id_column=self.shapefile_id_column,
-                                                                   data_id_column=self.data_id_column)
 
         self.data_table['GEOID'] = self.data_table.index
-        self.data_table_bg = None # this is only needed if we go for block level data
-
-        if self.level == 'block' and self.shapefile_location_blockgroups is not None:
-            self.data_table_bg, state_perimeter = prepare_shapefile_data_table(
-                shapefile_location=self.shapefile_location_blockgroups,
-                data_location=self.data_location_blockgroups, level='blockgroup')
-            self.data_table_bg['GEOID'] = self.data_table_bg.index
 
         self.assignmentsDF = copy.deepcopy(self.data_table)
-        self.assignmentsDF_bg = copy.deepcopy(self.data_table_bg)
 
         self.numPrecincts = len(self.assignmentsDF.index)
-
-        print(list(self.assignmentsDF))
 
         self.idealPop = self.assignmentsDF[self.population_column].sum()/self.numDistricts
         self.maxPop = self.idealPop * (1 + self.topMaxPerCent)
         self.minPop = self.idealPop * (1 - self.bottomMinPerCent)
         self.districtList = list(range(1,self.numDistricts+1))
 
+        self.weightsDF = lp.weights.Rook.from_dataframe(self.data_table, ids=self.data_table.index.tolist())
+
         random.seed(self.seed)
+
+        # print(self.assignmentsDF.index)
+
+        print("SFSR Setup completed.")
 
     def getSettings(self):
         toReturn = ''
@@ -1319,10 +1339,10 @@ class SFSR():
         # Make copies for a single run of the various DataFrames read in
         print(f'Start time = {startTime}')
 
-        newDF = go(self.idealPop, self.minPop, self.maxPop, self.numDistricts,
-                   self.topMaxPerCent, self.bottomMinPerCent,
-                   self.numPrecincts, self.districtList, self.assignmentsDF, self.assignmentsDF_bg, self.level,
-                   self.use_original_sfsr,
+        newDF = go(self.idealPop, self.minPop, self.maxPop,
+                   self.numDistricts, self.topMaxPerCent, self.bottomMinPerCent,
+                   self.districtList, self.assignmentsDF,
+                   self.use_original_sfsr, self.weightsDF,
                    verbose, self.population_column, seed=self.seed)
 
         stopTime = str(datetime.datetime.now())

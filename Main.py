@@ -6,7 +6,6 @@ Initially created on Fr 2019-11-15
 
 """
 import pandas as pd
-import copy
 from Functions.sfsr import SFSR
 from Functions.EvaluationFunctions import *
 
@@ -107,7 +106,8 @@ def chunks(lst, k):
         yield lst[i:i + k]
 
 
-def read_files_parallel(filename, data_table, number_postprocessing_runs_per_solution):
+def read_files_parallel(filename, data_table, shapefile_id_column,
+                        number_postprocessing_runs_per_solution):
     """
     Read in files in parallel
     :param data_table: the geo dataframe with population and geometry information
@@ -119,22 +119,24 @@ def read_files_parallel(filename, data_table, number_postprocessing_runs_per_sol
         return
     print('next filename: ', filename)
     df_cols = pd.read_csv(filename, nrows=0)
-    cols_used = None
-    if 'GEOID' in df_cols:
-        cols_used = ['GEOID', 'District']
-    elif 'GEOID10' in df_cols:
-        cols_used = ['GEOID10', 'District']
-    else:
-        ValueError('Either GEOID or GEOID10 column needs to be in the data')
+    cols_used = [shapefile_id_column, 'District']
+    # if 'GEOID' in df_cols:
+    #     cols_used = ['GEOID', 'District']
+    # elif 'GEOID10' in df_cols:
+    #     cols_used = ['GEOID10', 'District']
+    # else:
+    #     ValueError('Either GEOID or GEOID10 column needs to be in the data')
 
     df = pd.read_csv(filename, usecols=cols_used)
-    if 'GEOID10' in df_cols:
-        df = df.rename(columns={"GEOID10": "GEOID"})
+    df.set_index(shapefile_id_column, inplace=True)
+    df.index = df.index.astype(str)
 
     local_data_table = copy.deepcopy(data_table)
+    local_data_table.index = local_data_table.index.astype(str)
 
-    lookup_dict = pd.Series(df.District.values, index=df.GEOID).to_dict()
-    local_data_table['District'] = local_data_table.index.map(lookup_dict)
+    # lookup_dict = pd.Series(df.District.values, index=df.index).to_dict()
+    # local_data_table['District'] = local_data_table.index.map(lookup_dict)
+    local_data_table = local_data_table.merge(df, on=shapefile_id_column)
 
     temp_plans = []
     temp_filenames = []
@@ -171,7 +173,7 @@ def getDuplicateColumns(df):
     return list(duplicateColumnNames)
 
 
-def remove_duplicates_from_path(solution_directory):
+def remove_duplicates_from_path(solution_directory, id_column=None):
     '''
     Basic function to remove duplicate SFSR solutions from the respective folder.
     :param solution_directory: Directory that should be checked for duplicate solutions
@@ -183,47 +185,128 @@ def remove_duplicates_from_path(solution_directory):
     all_files = [item for item in all_files if "Runtimes.csv" not in item]
     all_files = [item for item in all_files if "Plan_Metrics.csv" not in item]
 
+    if len(all_files) == 0:
+        return
+
     filename = all_files[0]
-    df_cols = pd.read_csv(filename, nrows=0)
-    cols_used = None
-    if 'GEOID' in df_cols:
-        cols_used = ['GEOID']
-    elif 'GEOID10' in df_cols:
-        cols_used = ['GEOID10']
-    else:
-        ValueError('Either GEOID or GEOID10 column needs to be in the data')
+    cols_used = [id_column]
 
     solutions_df = pd.read_csv(filename, usecols=cols_used)
 
-    if 'GEOID10' in df_cols:
-        solutions_df = solutions_df.rename(columns={"GEOID10": "GEOID"})
+    # if 'GEOID10' in df_cols:
+    #     solutions_df = solutions_df.rename(columns={"GEOID10": "GEOID"})
+    solutions_df = solutions_df.rename(columns={id_column: "GEOID"})
 
     # get initial GEOIDs for the first solution to start the df
 
     for i, filename in enumerate(all_files):
-        df_cols = pd.read_csv(filename, nrows=0)
-        cols_used = None
-        if 'GEOID' in df_cols:
-            cols_used = ['GEOID', 'District']
-        elif 'GEOID10' in df_cols:
-            cols_used = ['GEOID10', 'District']
-        else:
-            ValueError('Either GEOID or GEOID10 column needs to be in the data')
 
-        df = pd.read_csv(filename, usecols=cols_used)
+        df = pd.read_csv(filename, usecols=[id_column,'District'])
         df = df.rename(columns={"District": str("District" + str(i))})
-        if 'GEOID10' in df_cols:
-            df = df.rename(columns={"GEOID10": "GEOID"})
+        # if 'GEOID10' in df_cols:
+        #     df = df.rename(columns={"GEOID10": "GEOID"})
+        df = df.rename(columns={id_column: "GEOID"})
+
         solutions_df = solutions_df.merge(df, on=('GEOID'))
 
     # detect potential duplicates
     duplicated_solutions = getDuplicateColumns(solutions_df)
-    df = df.drop(columns=duplicated_solutions)
+    df = solutions_df.drop(columns=duplicated_solutions)
 
     # for each duplicated column, delete the corresponding solution from the directory
     for duplicate in duplicated_solutions:
         ix = df.columns.get_loc(duplicate) - 1 # the first index would be the GEOID
         os.remove(all_files[ix])
+
+def calculate_and_save_metrics(chunk_size, congress_districts, path, type, data_table,
+                               include_minority_majority, include_num_county_split, level_string, manual_save_location,
+                               num_districts, pool, population_column, population_tolerance, state_path, use_cvap,
+                               shapefile_id_column):
+
+    existing_cost_filename = None
+    # now, calculate the metrics for the county optimized solutions
+    cost_columns = ['solution_id', 'compactness',
+                    'compactness_radial', 'compactness_polsby_popper', 'compactness_schwartzberg',
+                    'compactness_reock', 'compactness_convex_hull_ratio', 'compactness_moment_of_inertia',
+                    'population_deviation', 'lower_tolerance', 'upper_tolerance']
+    if include_num_county_split == "True":
+        cost_columns.append('num_county_split')
+    if include_minority_majority == 'True':
+        cost_columns.extend(['w75', 'w50', 'b50', 'b40', 'nw50', 'nw40', 'l50', 'l40'])
+    cost_df = pd.DataFrame(columns=cost_columns)
+    if manual_save_location == "":
+        all_files = glob.glob(path + "/*.csv")
+    else:
+        manual_files = glob.glob(manual_save_location + "/*.csv")
+        all_files = manual_files
+    # delete the runlog and runtimes files
+    all_files = [item for item in all_files if "runlogs.csv" not in item]
+    all_files = [item for item in all_files if "Runtimes.csv" not in item]
+    all_files = [item for item in all_files if "Plan_Metrics.csv" not in item]
+    # # calculate the weight object and re-use it to speed up calculations
+    # files = []
+    # for file in all_files[0]:
+    #     files.extend(read_files_parallel(file, data_table, 1))
+    # solution_candidate = files[0][0]
+    # weightsDF = ps.lib.weights.Rook.from_dataframe(solution_candidate, ids=solution_candidate.index.tolist())
+    # read in the existing data and costs
+    if manual_save_location == "":
+        cvap_str = "Total_NumDist" + str(num_districts) + "_PopTol" + str(population_tolerance)
+        if use_cvap == "True":
+            cvap_str = "CVAP_NumDist" + str(num_districts) + "_PopTol" + str(population_tolerance)
+        existing_cost_filename = state_path + '' + type + '_Costs_' + level_string + '_' + cvap_str + '.csv'
+        print('existing cost file name: ', existing_cost_filename)
+        print('does the cost file exist already? ', os.path.exists(existing_cost_filename))
+        if os.path.exists(existing_cost_filename):
+            cost_df = pd.read_csv(existing_cost_filename, usecols=cost_columns)
+
+            # then, get the names of the solutions which are not already in the csv
+            existing_solutions = cost_df['solution_id'].to_list()
+            existing_solutions = '\t'.join(existing_solutions)
+
+            all_files_new = []
+            for solution in all_files:
+                if solution not in existing_solutions:
+                    all_files_new.append(solution)
+
+            all_files = all_files_new
+    # if we have new solutions, run the subsequent evaluation functions to calculate various metrics
+    if len(all_files) != 0:
+
+        chunk_size = min(len(all_files), chunk_size)
+
+        all_files_chunks = chunks(all_files, chunk_size)
+
+        for files in all_files_chunks:
+
+            # read in all plans in parallel
+            results = pool.map(partial(read_files_parallel, data_table=data_table,
+                                       shapefile_id_column = shapefile_id_column,
+                                       number_postprocessing_runs_per_solution=1), files)
+            plans = [i[0][0] for i in results]
+            plan_names = [i[1][0] for i in results]
+
+            # calculate the costs in parallel
+            costs = pool.map(partial(calculate_metrics,
+                                     congress_districts=congress_districts, population_column=population_column,
+                                     include_num_county_split=include_num_county_split,
+                                     include_minority_majority=include_minority_majority), plans)
+
+            for i, solution in enumerate(plans):
+                # print("plan name: ", plan_names[i][0])
+                next_row = [plan_names[i][0]]
+
+                next_row.extend(costs[i])
+
+                print('next row', next_row)
+                cost_df.loc[len(cost_df)] = next_row
+
+        # delete potential duplicates
+        cost_df.drop_duplicates()
+        if manual_save_location == "":
+            cost_df.to_csv(existing_cost_filename)
+        else:
+            cost_df.to_csv((manual_save_location + 'Costs.csv'))
 
 
 def main_run(pool):
@@ -310,10 +393,11 @@ def main_run(pool):
 
     # Step 0
     # read in basic geometry for the current State
-    data_table, state_perimeter = prepare_shapefile_data_table(shapefile_location=shapefile_location,
-                                                               data_location=data_location, level=level,
-                                                               shapefile_id_column=shapefile_id_column,
-                                                               data_id_column=data_id_column)
+    data_table = prepare_shapefile_data_table(shapefile_location=shapefile_location,
+                                              data_location=data_location,
+                                              shapefile_id_column=shapefile_id_column,
+                                              data_id_column=data_id_column,
+                                              population_column=population_column)
 
     # Step 1: Start SFSR
     print('## Start SFSR ##')
@@ -332,9 +416,7 @@ def main_run(pool):
         sfsr = SFSR(numRuns=num_sfsr_runs, pathToData='Data/' + state_name_abbr + '/', nDistricts=numDistricts,
                     tolerance=population_tolerance,
                     neighborsType='rook', pathToOutputData=sfsr_path,
-                    cvap=use_cvap, level=level, shapefile_location=shapefile_location, data_location=data_location,
-                    shapefile_location_blockgroups=shapefile_location_blockgroups,
-                    data_location_blockgroups=data_location_blockgroups,
+                    cvap=use_cvap, level=level, data_table=data_table,
                     shapefile_id_column=shapefile_id_column,
                     data_id_column=data_id_column,
                     population_column=population_column, use_original_sfsr=use_original_sfsr)
@@ -346,202 +428,34 @@ def main_run(pool):
 
     print("## Redistricting completed ##")
 
-    # Step 2: Calculate the solution properties
-    print('read in previously generated solutions')
+    # Step 2: Drop potential duplicate solutions
+    if manual_save_location == "":
+        remove_duplicates_from_path(sfsr_path, shapefile_id_column)
+    else:
+        remove_duplicates_from_path(manual_save_location, shapefile_id_column)
 
-    plans = []
-    plan_names = []
+    # Step 3: Calculate the solution properties
+    print('read in previously generated solutions')
 
     # here, calculate the population-based statistics for both Total and CVAP population if available.
     # otherwise, if CVAP is not available only calculate the regular population-based statistics
 
-    data_string = '_CVAP'
-    if use_cvap == "False":
-        data_string = ""
-    data_location_other = 'Data/' + state_name_abbr + '/Census_' + level_string + '_Demographics' + \
-                          data_string+'.csv'
-    data_table_other = None
-
-    population_string = '_cvap'
-    if use_cvap == "False":
-        population_string = '_total'
-
-    cost_columns = ['solution_id', 'PopTol', 'PopTolMax', 'MaxFlips', 'AllDist', 'Rnd', 'MN', 'NIter',
-                    'compactness',
-                    'compactness_radial', 'compactness_polsby_popper', 'compactness_schwartzberg',
-                    'compactness_reock', 'compactness_convex_hull_ratio', 'compactness_moment_of_inertia',
-                    'population_deviation', 'homogeneity',
-                    'similarity', 'lower_tolerance', 'upper_tolerance']
-
-    include_num_county_split = "False"
-    include_minority_majority = "False"
-
-    if 'county' in data_table:
-        include_num_county_split = "True"
-
-        cost_columns.extend(['num_county_split'])
-
-    if 'white_population' in data_table and 'black_population' in data_table and 'latino_population' in data_table:
-        include_minority_majority = "True"
-
-        cost_columns.extend(['w75', 'w50', 'b50',
-                            'b40', 'nw50', 'nw40', 'l50', 'l40'])
-
     try:
-        data_table_other, state_perimeter = prepare_shapefile_data_table(shapefile_location=shapefile_location,
-                                                                         data_location=data_location_other,
-                                                                         shapefile_id_column=shapefile_id_column,
-                                                                         data_id_column=data_id_column)
+        path = sfsr_path
+        type = "SFSR"
+        # note: only include the following two aspects if minority/majority data is available and
+        # if there is a county column in the dataset
+        include_minority_majority = "False"
+        include_num_county_split = "False"
+
+        calculate_and_save_metrics(chunk_size, congress_districts, path, type, data_table,
+                                   include_minority_majority, include_num_county_split, level_string,
+                                   manual_save_location, numDistricts, pool, population_column, population_tolerance,
+                                   state_path, use_cvap, shapefile_id_column)
+
     except Exception as e:
-        print("exception during reading the second datafile: ", e)
-
-    if data_table_other is not None:
-        print('adding the second data table')
-        population_string = '_cvap'
-        if use_cvap == "True":
-            population_string = '_total'
-        data_table_other = data_table_other.rename(columns={"total_population": "total_population"+population_string,
-                                                            "white_population": "white_population"+population_string,
-                                                            "black_population": "black_population"+population_string,
-                                                            "latino_population": "latino_population"+population_string,
-                                                            "other_population": "other_population"+population_string})
-
-        # add the 'other' population measures depending on if we initially used total or cvap populations
-        data_table = data_table.join(data_table_other[['total_population'+population_string,
-                                                       'white_population'+population_string, 'black_population'+
-                                                       population_string, 'latino_population'+
-                                                       population_string, 'other_population'+population_string]])
-
-
-    # save the costs for the heuristic solutions and the original solutions
-        cost_columns.extend(['w75'+population_string, 'w50'+population_string, 'b50'+population_string,
-                             'b40'+population_string, 'nw50'+population_string, 'nw40'+population_string,
-                             'l50'+population_string, 'l40'+population_string])
-
-    cost_df = pd.DataFrame(columns=cost_columns)
-
-    if manual_save_location == "":
-        sfsr_files = glob.glob(sfsr_path + "/*.csv")
-        all_files = sfsr_files
-    else:
-        manual_files = glob.glob(manual_save_location + "/*.csv")
-        all_files = manual_files
-
-    # delete the runlog and runtimes files
-    all_files = [item for item in all_files if "runlogs.csv" not in item]
-    all_files = [item for item in all_files if "Runtimes.csv" not in item]
-    all_files = [item for item in all_files if "Plan_Metrics.csv" not in item]
-
-    # read in the existing data and costs
-    cvap_str = "Total_NumDist" + str(num_districts) + "_PopTol"+str(population_tolerance)
-    if use_cvap == "True":
-        cvap_str = "CVAP_NumDist" + str(num_districts) + "_PopTol"+str(population_tolerance)
-    existing_cost_filename = state_path + 'Costs_' + level_string + '_' + cvap_str + '.csv'
-    print('existing cost file name: ', existing_cost_filename)
-    print('does the cost file exist already? ', os.path.exists(existing_cost_filename))
-    if os.path.exists(existing_cost_filename):
-        cost_df = pd.read_csv(existing_cost_filename)
-        cost_df = cost_df.drop(cost_df.columns[0], axis=1)
-
-        # then, get the names of the solutions which are not already in the csv
-        existing_solutions = cost_df['solution_id'].to_list()
-        existing_solutions = '\t'.join(existing_solutions)
-
-        all_files_new = []
-        for solution in all_files:
-            if solution not in existing_solutions:
-                all_files_new.append(solution)
-
-        all_files = all_files_new
-
-    # if we have new solutions, run the subsequent evaluation functions to calculate various metrics
-    if len(all_files) != 0:
-
-        chunk_size = min(len(all_files), chunk_size)
-
-        all_files_chunks = chunks(all_files, chunk_size)
-
-        for files in all_files_chunks:
-
-            # read in all plans in parallel
-            results = pool.map(partial(read_files_parallel, data_table=data_table,
-                             number_postprocessing_runs_per_solution=1), files)
-            plans = [i[0][0] for i in results]
-            plan_names = [i[1][0] for i in results]
-
-            # calculate the costs in parallel
-            costs = pool.map(partial(calculate_metrics, state_perimeter=state_perimeter,
-                                     congress_districts=congress_districts, population_column=population_column,
-                                     include_num_county_split=include_num_county_split,
-                                     include_minority_majority=include_minority_majority), plans)
-            # print(costs)
-
-            if data_table_other is not None:
-                additional_costs = pool.map(partial(calculate_minority_majority_districts,
-                                                    column_suffix=population_string,
-                                                    population_column=population_column), plans)
-                # print(additional_costs)
-
-            for i, solution in enumerate(plans):
-                # print("plan name: ", plan_names[i][0])
-                next_row = [plan_names[i][0]]
-                plan_names_split = plan_names[i][0].split('_')
-                # if it's an original solution, it will have no split, i.e. only one string
-                if len(plan_names_split) == 1:
-                    next_row.extend(['NA', 'NA', 'NA', 'NA', 'NA', 'NA', 'NA'])
-                else:
-                    for j, text in enumerate(plan_names_split):
-
-                        if 'PopTolTrue' in text or 'MaxFlips' in text or 'MN' in text or 'NIter' in text:
-                            if 'PopTol' in text:
-                                next_row.extend(
-                                    ['True', re.findall("[-+]?[.]?[\d]+(?:,\d\d\d)*[\.]?\d*(?:[eE][-+]?\d+)?", text)[0]])
-                            else:
-                                next_row.extend(re.findall("[-+]?[.]?[\d]+(?:,\d\d\d)*[\.]?\d*(?:[eE][-+]?\d+)?", text))
-                        elif 'csv' in text:
-                            # this indicates the last entry
-                            continue
-                        else:
-                            if 'PopTolFalse' in text:
-                                next_row.extend(['False', 'NA'])
-                            elif 'True' in text:
-                                next_row.extend(['True'])
-                            else:
-                                next_row.extend(['False'])
-                next_row.extend(costs[i])
-                if data_table_other is not None:
-                    next_row.extend(additional_costs[i])
-                print('next row', next_row)
-                cost_df.loc[len(cost_df)] = next_row
-
-        # delete potential duplicates
-        cost_df.drop_duplicates()
-        cost_df.to_csv(existing_cost_filename)
-
-        if save_pareto_solutions_in_folder == 'True':
-            # calculate the pareto efficient solutions
-            cost_df_pareto = pd.DataFrame(columns=cost_columns)
-            costs = np.array(costs)
-            pareto_efficient_index = is_pareto_efficient_simple(costs)
-
-            columns_to_save = ['District',population_column]
-            for i, index in enumerate(pareto_efficient_index):
-
-                # # if the index is False, it means the solution is dominated by other heuristics and can be deleted
-                if index:
-                    # add it to the pareto csv
-                    cost_df_pareto.loc[len(cost_df_pareto)] = cost_df.loc[i]
-
-                    previous_file_name = plan_names[i][0]
-                    # save the heuristics solutions in the 'Heuristics' folder
-                    previous_file_name = previous_file_name.replace('SFSR', 'Pareto')
-                    previous_file_name = previous_file_name.replace('Heuristic', 'Pareto')
-                    path = previous_file_name + '.csv'
-
-                    plans[i][columns_to_save].to_csv(path)
-
-            cost_df_pareto.to_csv((pareto_solutions_path + '/Costs_Pareto.csv'))
-            print("## Pareto-efficient solutions saved in Pareto/ folder ##")
+        print('Exception during calculating solution costs/characteristics')
+        print(e)
 
 
 if __name__ == '__main__':

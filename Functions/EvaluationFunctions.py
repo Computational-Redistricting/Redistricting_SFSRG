@@ -6,13 +6,15 @@ Created on Wed 2019-10-30
 
 """
 
-import pysal as ps
+import libpysal as lp
 import numpy as np
 from statistics import mean
 import geocompactness.compactness_measures as cm
 import geopandas as gp
 from shapely.geometry.multipolygon import MultiPolygon
 from shapely.geometry.polygon import Polygon
+import copy
+from decimal import DivisionByZero
 
 def calculate_compactness_boundary_lengths(district_df_agg, state_perimeter):
     """
@@ -22,13 +24,21 @@ def calculate_compactness_boundary_lengths(district_df_agg, state_perimeter):
     :return: the compactness score for the specified district
     """
 
-    # note: we use km, not m here
-    district_lengths = district_df_agg.length / 1000
+    try:
+        # note: we use km, not m here
+        district_lengths = district_df_agg.length / 1000
 
-    local_state_perimeter = state_perimeter / 1000
+        local_state_perimeter = state_perimeter / 1000
 
-    compactness = (sum(district_lengths) - local_state_perimeter) / 2 * local_state_perimeter
-    return compactness.iloc[0]
+        if local_state_perimeter != 0:
+            compactness = (sum(district_lengths) - local_state_perimeter) / \
+                2 * local_state_perimeter
+            return compactness
+        else:
+            raise DivisionByZero
+    except DivisionByZero:
+        print("Division by zero exception while calculating the boundary lengths: ")
+
 
 
 def calculate_compactness_radial(district_df, district_df_agg):
@@ -83,7 +93,7 @@ def check_contiguity_district(num_district, district_df):
     :return: boolean true/false if the specified district is contiguous or not
     """
 
-    w_d1 = ps.lib.weights.Rook.from_dataframe(district_df[district_df.District == num_district])
+    w_d1 = lp.weights.Rook.from_dataframe(district_df[district_df.District == num_district])
 
     if w_d1.n_components == 1:
         return True
@@ -228,7 +238,6 @@ def calculate_similarity_to_existing_districting(district_df_agg, congress_distr
     This function calculates a similarity score that represents how close the districts are to the existing solution.
     For this, each district is compared to the most overlapping district in the existing solution.
     For now, this follows the similarity score suggested by Bozkaya 2003
-    :param district_df: the new solution candidate for the redistricting problem
     :return:
     """
     # print('crs of district_df: ', district_df.crs)
@@ -374,8 +383,8 @@ def calculate_minority_majority_districts(solution_candidate, column_suffix=None
     return w75, w50, b50, b40, nw50, nw40, l50, l40
 
 
-def calculate_metrics(solution_candidate, state_perimeter, congress_districts, population_column,
-                                     include_num_county_split, include_minority_majority):
+def calculate_metrics(solution_candidate, congress_districts, population_column,
+                                     include_num_county_split='False', include_minority_majority='False'):
     """
     Calculates various solution metrics and adds them to the existing costs list
     :param solution_candidate: the solution candidate for which costs should be calculated
@@ -388,8 +397,17 @@ def calculate_metrics(solution_candidate, state_perimeter, congress_districts, p
 
     # first, we aggregate the solution candidate by district
     district_df_agg = solution_candidate.dissolve(by='District', aggfunc='sum')
-    state_df_agg = solution_candidate.dissolve(by='state', aggfunc='sum')
-    state_area = state_df_agg['geometry'].area[0]
+    # state_df_agg = solution_candidate.dissolve(by='state', aggfunc='sum')
+    # state_area = state_df_agg['geometry'].area[0]
+
+    # also calculate the state perimeter
+    territory_id = [1] * solution_candidate.shape[0]
+
+    # calculate the state perimeter
+    data_table_perimeter = copy.deepcopy(solution_candidate)
+    data_table_perimeter['territory'] = territory_id
+    data_table_agg = data_table_perimeter.dissolve(by='territory')
+    state_perimeter = data_table_agg.length.iloc[0]
 
     # new: convert to multipolygon for easier calculation of compactness measures
     multipolygons = []
@@ -420,21 +438,20 @@ def calculate_metrics(solution_candidate, state_perimeter, congress_districts, p
     print('calculate population equality')
     temp_equality = calculate_population_equality(district_df=solution_candidate, population_column=population_column)
 
-    print('calculate socioeconomic homogeneity')
-    temp_homogeneity = calculate_socioeconomic_homogeneity(district_df=solution_candidate)
+    # print('calculate socioeconomic homogeneity')
+    # temp_homogeneity = calculate_socioeconomic_homogeneity(district_df=solution_candidate)
 
-    print('calculate similarity')
-    temp_similarity = calculate_similarity_to_existing_districting(district_df_agg=district_df_agg,
-                                                                   congress_districts=congress_districts,
-                                                                   state_area=state_area)
+    # print('calculate similarity')
+    # temp_similarity = calculate_similarity_to_existing_districting(district_df_agg=district_df_agg,
+    #                                                                congress_districts=congress_districts,
+    #                                                                state_area=state_area)
 
     print('calculate lower and upper tolerance')
     lower, upper = calculate_population_tolerance(district_df=solution_candidate, population_column=population_column)
 
     result = [temp_compactness, temp_compactness_radial]
     result.extend(temp_compactness_measures)
-    result.extend([temp_equality, temp_homogeneity,
-                   temp_similarity, lower, upper])
+    result.extend([temp_equality, lower, upper])
 
     if include_num_county_split == "True":
         print('calculate num county split')
