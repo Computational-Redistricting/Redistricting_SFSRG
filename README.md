@@ -10,9 +10,8 @@ The Redistricting Python program consists of several building blocks:
 2) Direct integration of the Census API: Currently, the program supports automated loading of the relevant Census tract-level data for different states.
 3) A pareto-dominance approach for various evaluation criteria, comparing different solutions across a multitude of objectives and returning/saving the non-dominated solutions.
 
-# Neccessary libraries:
+# Necessary libraries:
 - libpysal
-- pysal (install libspatialindex first for Unix systems to prevent potential issues, then try pip install pysal if conda times out)
 - simpledbf
 - pandas
 - geopandas
