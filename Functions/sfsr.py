@@ -1339,7 +1339,7 @@ class SFSR():
         startTimex = re.sub(r'(:|\.| )', 'x', startTime)
 
         # columns_to_save = ['GEOID', 'District', self.population_column]
-        columns_to_save = ['District', self.population_column]
+        columns_to_save = ['District', self.population_column, self.shapefile_id_column]
 
         newDF = newDF[columns_to_save]
 
