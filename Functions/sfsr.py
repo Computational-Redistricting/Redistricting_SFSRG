@@ -70,7 +70,7 @@ def integrate_disconnected_components(data_table, population_column="total_popul
         disconnected_components.append([ix, min_distance_index])
 
         # print(min_distance_index)
-        data_table_large_component.loc[min_distance_index]['geometry'] = \
+        data_table_large_component.loc[min_distance_index,'geometry'] = \
             data_table_large_component.loc[min_distance_index, 'geometry'].union(
             data_table.loc[ix, 'geometry'])
 
@@ -140,7 +140,7 @@ def prepare_shapefile_data_table(shapefile_location, data_location, shapefile_id
     data_table = None
 
     try:
-        data_table = gp.read_file(shapefile_location, encoding='utf-8')
+        data_table = gp.read_file(shapefile_location, encoding='utf-8', engine="pyogrio")
 
         # project it to the 3857 (Mercator) CRS for more accurate boundary calculations
         data_table = data_table.to_crs(epsg=3857)
@@ -215,10 +215,16 @@ def getDistrictPopulation(theDistrictNum,assignDF, population_column='total_popu
     :param population_column: the population column name
     :return: the population for the specified district
     '''
-    districtRecords = assignDF[assignDF['District'] == theDistrictNum]
-    districtPop = districtRecords[population_column].sum()
+    # Convert columns to NumPy arrays
+    district_array = assignDF['District'].values
+    population_array = assignDF[population_column].values
+    
+    # Create a boolean mask
+    mask = district_array == theDistrictNum
+    
+    # Use the mask to filter and sum the population
+    districtPop = np.sum(population_array[mask])
     return districtPop
-
 
 def getDistrictPops(assignDF,districtList, population_column='total_population'):
     '''
@@ -330,14 +336,31 @@ def fastContiguityCheckForChangedDistrict(weights, listOfPrecincts):
     :param listOfPrecincts:
     :return:
     '''
-    ids = weights.id_order
-    idxs = np.searchsorted(ids, listOfPrecincts)
+    # ids = weights.id_order
+    # idxs = np.searchsorted(ids, listOfPrecincts)
 
-    num_components = connected_components(weights.sparse[idxs][:, idxs], directed=False)[0]
-    if num_components > 1:
-        return False
-    else:
+    # num_components = connected_components(weights.sparse[idxs][:, idxs], directed=False)[0]
+    # if num_components > 1:
+    #     return False
+    # else:
+    #     return True
+    if not listOfPrecincts:
         return True
+
+    precinct_set = set(listOfPrecincts)
+    visited = set()
+    stack = [listOfPrecincts[0]]
+
+    while stack:
+        node = stack.pop()
+        if node not in visited:
+            visited.add(node)
+            neighbors = weights.neighbors[node]
+            # Consider only neighbors in the subset
+            unvisited_neighbors = precinct_set.intersection(neighbors) - visited
+            stack.extend(unvisited_neighbors)
+
+    return visited == precinct_set
 
 
 def seed_fill_single_blockgroup(initialDF, numberSubgroupsPerBlockgroup):
@@ -449,15 +472,138 @@ def seed_fill_single_blockgroup(initialDF, numberSubgroupsPerBlockgroup):
     return newDF
 
 
-def seed_fill(assignmentsDF, w_df, numDistricts, use_original_sfsr, population_column):
+# def seed_fill(assignmentsDF, w_df, numDistricts, use_original_sfsr, population_column):
+#     '''
+#     Runs the initial seed and fill step of the SFSR procedure
+#     First, random precincts are chosen and seeded with different district IDs
+#     Then, Fill assigns previously unassigned precincts to an existing district
+#     Notes:
+#         - the initial seed and fill routine creates a contiguous assignment where each precinct belongs to a district
+#     :param assignmentsDF: the current GeoDataFrame with precinct-district assignments (initialized)
+#     :param w_df: the pysal weights object with neighbor information
+#     :param numDistricts: the number of districts to create
+#     :param use_original_sfsr: should the original sfsr be used ("True") or the greedy version ("False")
+#     :return: a GeoDataFrame with precinct-district mappings that represents a contiguous assignment
+#     '''
+
+#     tempTime = datetime.datetime.now()
+
+#     unassigned = []  # This will be a list of 2-tuples (idx, -1)
+#     assignedDict = {}
+#     # randomly assign a bunch of precincts
+
+#     precinctList = list(assignmentsDF.index)
+
+#     assignmentsDF['District'] = -1
+
+#     districtList = list(range(1, numDistricts+1))
+
+#     # Shuffle the list. shuffle works in place.
+#     random.shuffle(precinctList)
+#     for district in districtList:
+#         assignmentsDF.loc[precinctList[district], 'District'] = district
+
+#     for item in assignmentsDF.index:
+#         if assignmentsDF.loc[item, 'District'] < 0:
+#             unassigned.append((item, assignmentsDF.loc[item, 'District']))
+#         else:
+#             assignedDict[item] = assignmentsDF.loc[item, 'District']
+
+#     global time_seed, count_seed
+#     time_seed += (datetime.datetime.now() - tempTime).total_seconds()
+#     count_seed += 1
+
+#     tempTime = datetime.datetime.now()
+
+#     while len(unassigned) > 0:  # We have assignments to make
+#         # Pick a random precinct already assigned.
+
+#         if use_original_sfsr == "True":
+#             precinct = random.choice(list(assignedDict.keys()))
+#             district = assignedDict[precinct]
+
+#             # Get the neighbors of precinct
+#             neighbors = list(w_df[precinct].keys())
+
+#             unassigned_precincts = [item[0] for item in unassigned]
+
+#             # check if at least one neighbor is yet unassigned. if yes, assign
+#             if set(unassigned_precincts) & set(neighbors):
+#                 # Shuffle, randomize the order of, the neighbors.
+#                 # This is done in place.
+#                 random.shuffle(neighbors)
+#                 # Go through the neighbors as shuffled. If we find
+#                 # an unassigned neighbor, assign it to the district
+#                 # of the current precinct, precinct.
+#                 for item in neighbors:
+#                     if assignedDict.get(item, -1) < 0:  # so if it's not there, not assigned
+#                         assignedDict[item] = district
+#                         assignmentsDF.loc[item, 'District'] = district
+#                         unassigned.remove((item, -1))
+#                         break
+
+#         else:
+#             # alternatively, we can add to the smallest of the groups to aim for a more balanced distribution
+#             districtPops = getDistrictPopsDict(assignmentsDF, districtList, population_column=population_column)
+
+#             districtPopsSorted = {k: v for k, v in sorted(districtPops.items(), key=lambda item: item[1])}
+
+#             district_done = False
+#             for key in districtPopsSorted:
+#                 district = key
+#             # district = min(range(len(districtPops)), key=districtPops.__getitem__) + 1
+
+#                 # print('district pops: ', districtPops)
+#                 # print('pick district with min population: ', district)
+#                 precincts = [key for key, value in assignedDict.items() if value == district]
+#                 # print('precincts: ', precincts)
+#                 done = False
+#                 for precinct in precincts:
+
+#                     # Get the neighbors of precinct
+#                     neighbors = list(w_df[precinct].keys())
+
+#                     unassigned_precincts = [item[0] for item in unassigned]
+
+#                     # check if at least one neighbor is yet unassigned. if yes, assign
+#                     if set(unassigned_precincts) & set(neighbors):
+#                         # Shuffle, randomize the order of, the neighbors.
+#                         # This is done in place.
+#                         random.shuffle(neighbors)
+#                         # Go through the neighbors as shuffled. If we find
+#                         # an unassigned neighbor, assign it to the district
+#                         # of the current precinct, precinct.
+#                         for item in neighbors:
+#                             if assignedDict.get(item, -1) < 0:  # so if it's not there, not assigned
+#                                 assignedDict[item] = district
+#                                 assignmentsDF.loc[item, 'District'] = district
+#                                 unassigned.remove((item, -1))
+#                                 break
+#                     if done:
+#                         district_done = True
+#                         break
+#                 if district_done:
+#                     break
+
+#     global time_fill, count_fill
+#     time_fill += (datetime.datetime.now() - tempTime).total_seconds()
+#     count_fill += 1
+
+#     assignmentsDF['GEOID'] = assignmentsDF.index.tolist()
+
+#     # print(assignmentsDF.head())
+
+#     return assignmentsDF
+
+def seed_fill(assignmentsDF, weightsDF, numDistricts, use_original_sfsr, population_column='total_population', fill_by_county=False):
     '''
     Runs the initial seed and fill step of the SFSR procedure
     First, random precincts are chosen and seeded with different district IDs
     Then, Fill assigns previously unassigned precincts to an existing district
     Notes:
         - the initial seed and fill routine creates a contiguous assignment where each precinct belongs to a district
+    :param weightsDF: the pysal weights object with neighbor information
     :param assignmentsDF: the current GeoDataFrame with precinct-district assignments (initialized)
-    :param w_df: the pysal weights object with neighbor information
     :param numDistricts: the number of districts to create
     :param use_original_sfsr: should the original sfsr be used ("True") or the greedy version ("False")
     :return: a GeoDataFrame with precinct-district mappings that represents a contiguous assignment
@@ -473,94 +619,161 @@ def seed_fill(assignmentsDF, w_df, numDistricts, use_original_sfsr, population_c
 
     assignmentsDF['District'] = -1
 
-    districtList = list(range(1, numDistricts+1))
+    districtList = list(range(1, numDistricts + 1))
 
-    # Shuffle the list. shuffle works in place.
-    random.shuffle(precinctList)
-    for district in districtList:
-        assignmentsDF.loc[precinctList[district], 'District'] = district
+    if fill_by_county:
+        # Shuffle the list. shuffle works in place.
+        random.shuffle(precinctList)
+        list_of_counties_filled = []
+        while len(list_of_counties_filled) < numDistricts:
+            # print("next district")
+        # for district in range(1, numDistricts + 1):
+            # check if the next precinct is in a county that has already been filled
+            precinct = precinctList.pop()
+            county = assignmentsDF.loc[precinct, 'COUNTYFP20']
+            if county in list_of_counties_filled:
+                # unassigned.append((precinct, -1))
+                continue
+            else:
+                list_of_counties_filled.append(county)
+                assignmentsDF.loc[precinct, 'District'] = districtList.pop()
+                # new: fill all precincts in the same county with the same district
+                assignmentsDF.loc[assignmentsDF['COUNTYFP20'] == county, 'District'] = assignmentsDF.loc[precinct, 'District']
 
-    for item in assignmentsDF.index:
-        if assignmentsDF.loc[item, 'District'] < 0:
-            unassigned.append((item, assignmentsDF.loc[item, 'District']))
-        else:
-            assignedDict[item] = assignmentsDF.loc[item, 'District']
+        for item in assignmentsDF.index:
+            if assignmentsDF.loc[item, 'District'] < 0:
+                unassigned.append((item, assignmentsDF.loc[item, 'District']))
+            else:
+                assignedDict[item] = assignmentsDF.loc[item, 'District']
+        
+        precinctListFill = list(assignmentsDF.index)
+        random.shuffle(precinctListFill)   
 
-    global time_seed, count_seed
-    time_seed += (datetime.datetime.now() - tempTime).total_seconds()
-    count_seed += 1
+                # pick random assignmed precinct
+        precinct = random.choice(list(assignedDict.keys()))
 
-    tempTime = datetime.datetime.now()
+        # print("Now looking at precinct: ", precinct)
+        district = assignedDict[precinct]
 
-    while len(unassigned) > 0:  # We have assignments to make
-        # Pick a random precinct already assigned.
+        # Get the neighbors of precinct
+        neighbors = list(weightsDF[precinct].keys())
 
-        if use_original_sfsr == "True":
-            precinct = random.choice(list(assignedDict.keys()))
-            district = assignedDict[precinct]
+        unassigned_precincts = [item[0] for item in unassigned]
 
-            # Get the neighbors of precinct
-            neighbors = list(w_df[precinct].keys())
+        unassigned_neighbor_intersection = list(set(unassigned_precincts) & set(neighbors))
 
-            unassigned_precincts = [item[0] for item in unassigned]
+        # check if at least one neighbor is yet unassigned. if yes, assign and assign the entire county of the new precinct to the same district
+        if len(unassigned_neighbor_intersection) >0:
+            # Shuffle, randomize the order of, the neighbors.
+            # This is done in place.
+            random.shuffle(unassigned_neighbor_intersection)
+            # Go through the neighbors as shuffled. If we find
+            # an unassigned neighbor, assign it to the district
+            # of the current precinct, precinct.
 
-            # check if at least one neighbor is yet unassigned. if yes, assign
-            if set(unassigned_precincts) & set(neighbors):
-                # Shuffle, randomize the order of, the neighbors.
-                # This is done in place.
-                random.shuffle(neighbors)
-                # Go through the neighbors as shuffled. If we find
-                # an unassigned neighbor, assign it to the district
-                # of the current precinct, precinct.
-                for item in neighbors:
-                    if assignedDict.get(item, -1) < 0:  # so if it's not there, not assigned
-                        assignedDict[item] = district
-                        assignmentsDF.loc[item, 'District'] = district
-                        unassigned.remove((item, -1))
+            item = unassigned_neighbor_intersection[0]
+            assignedDict[item] = district
+            assignmentsDF.loc[item, 'District'] = district
+            # remove item from the unassigned list
+            # print('item: ', item)
+            unassigned.remove((item, -1))
+
+            # get all precincts in the same county and assign them to the same district
+            county = assignmentsDF.loc[item, 'COUNTYFP20']
+            assignmentsDF.loc[assignmentsDF['COUNTYFP20'] == county, 'District'] = district
+            # add all of them to the assigned dictionary
+            for precinct in assignmentsDF[assignmentsDF['COUNTYFP20'] == county].index.tolist():
+                assignedDict[precinct] = district
+            # remove all of these precincts from the unassigned list    
+            unassigned = [item for item in unassigned if item[0] not in assignmentsDF[assignmentsDF['COUNTYFP20'] == county].index.tolist()]
+    else:
+
+        # Shuffle the list. shuffle works in place.
+        random.shuffle(precinctList)
+        for district in districtList:
+            assignmentsDF.loc[precinctList[district], 'District'] = district
+
+        for item in assignmentsDF.index:
+            if assignmentsDF.loc[item, 'District'] < 0:
+                unassigned.append((item, assignmentsDF.loc[item, 'District']))
+            else:
+                assignedDict[item] = assignmentsDF.loc[item, 'District']
+
+        global time_seed, count_seed
+        time_seed += (datetime.datetime.now() - tempTime).total_seconds()
+        count_seed += 1
+
+        tempTime = datetime.datetime.now()
+
+        while len(unassigned) > 0:  # We have assignments to make
+            # Pick a random precinct already assigned.
+
+            if use_original_sfsr == "True":
+                precinct = random.choice(list(assignedDict.keys()))
+                district = assignedDict[precinct]
+
+                # Get the neighbors of precinct
+                neighbors = list(weightsDF[precinct].keys())
+
+                unassigned_precincts = [item[0] for item in unassigned]
+
+                # check if at least one neighbor is yet unassigned. if yes, assign
+                if set(unassigned_precincts) & set(neighbors):
+                    # Shuffle, randomize the order of, the neighbors.
+                    # This is done in place.
+                    random.shuffle(neighbors)
+                    # Go through the neighbors as shuffled. If we find
+                    # an unassigned neighbor, assign it to the district
+                    # of the current precinct, precinct.
+                    for item in neighbors:
+                        if assignedDict.get(item, -1) < 0:  # so if it's not there, not assigned
+                            assignedDict[item] = district
+                            assignmentsDF.loc[item, 'District'] = district
+                            unassigned.remove((item, -1))
+                            break
+
+            else:
+                # alternatively, we can add to the smallest of the groups to aim for a more balanced distribution
+                districtPops = getDistrictPopsDict(assignmentsDF, districtList, population_column=population_column)
+
+                districtPopsSorted = {k: v for k, v in sorted(districtPops.items(), key=lambda item: item[1])}
+
+                district_done = False
+                for key in districtPopsSorted:
+                    district = key
+                    # district = min(range(len(districtPops)), key=districtPops.__getitem__) + 1
+
+                    # print('district pops: ', districtPops)
+                    # print('pick district with min population: ', district)
+                    precincts = [key for key, value in assignedDict.items() if value == district]
+                    # print('precincts: ', precincts)
+                    done = False
+                    for precinct in precincts:
+
+                        # Get the neighbors of precinct
+                        neighbors = list(weightsDF[precinct].keys())
+
+                        unassigned_precincts = [item[0] for item in unassigned]
+
+                        # check if at least one neighbor is yet unassigned. if yes, assign
+                        if set(unassigned_precincts) & set(neighbors):
+                            # Shuffle, randomize the order of, the neighbors.
+                            # This is done in place.
+                            random.shuffle(neighbors)
+                            # Go through the neighbors as shuffled. If we find
+                            # an unassigned neighbor, assign it to the district
+                            # of the current precinct, precinct.
+                            for item in neighbors:
+                                if assignedDict.get(item, -1) < 0:  # so if it's not there, not assigned
+                                    assignedDict[item] = district
+                                    assignmentsDF.loc[item, 'District'] = district
+                                    unassigned.remove((item, -1))
+                                    break
+                        if done:
+                            district_done = True
+                            break
+                    if district_done:
                         break
-
-        else:
-            # alternatively, we can add to the smallest of the groups to aim for a more balanced distribution
-            districtPops = getDistrictPopsDict(assignmentsDF, districtList, population_column=population_column)
-
-            districtPopsSorted = {k: v for k, v in sorted(districtPops.items(), key=lambda item: item[1])}
-
-            district_done = False
-            for key in districtPopsSorted:
-                district = key
-            # district = min(range(len(districtPops)), key=districtPops.__getitem__) + 1
-
-                # print('district pops: ', districtPops)
-                # print('pick district with min population: ', district)
-                precincts = [key for key, value in assignedDict.items() if value == district]
-                # print('precincts: ', precincts)
-                done = False
-                for precinct in precincts:
-
-                    # Get the neighbors of precinct
-                    neighbors = list(w_df[precinct].keys())
-
-                    unassigned_precincts = [item[0] for item in unassigned]
-
-                    # check if at least one neighbor is yet unassigned. if yes, assign
-                    if set(unassigned_precincts) & set(neighbors):
-                        # Shuffle, randomize the order of, the neighbors.
-                        # This is done in place.
-                        random.shuffle(neighbors)
-                        # Go through the neighbors as shuffled. If we find
-                        # an unassigned neighbor, assign it to the district
-                        # of the current precinct, precinct.
-                        for item in neighbors:
-                            if assignedDict.get(item, -1) < 0:  # so if it's not there, not assigned
-                                assignedDict[item] = district
-                                assignmentsDF.loc[item, 'District'] = district
-                                unassigned.remove((item, -1))
-                                break
-                    if done:
-                        district_done = True
-                        break
-                if district_done:
-                    break
 
     global time_fill, count_fill
     time_fill += (datetime.datetime.now() - tempTime).total_seconds()
@@ -571,7 +784,6 @@ def seed_fill(assignmentsDF, w_df, numDistricts, use_original_sfsr, population_c
     # print(assignmentsDF.head())
 
     return assignmentsDF
-
 
 def get_border_AAU_list(assignmentDF, adjMatrix, adjMatrixIDs, district):
     '''
@@ -588,7 +800,8 @@ def get_border_AAU_list(assignmentDF, adjMatrix, adjMatrixIDs, district):
 
     # get precincts with neighbors in different districts
     # get indices of AAUs
-    idxs = np.searchsorted(adjMatrixIDs, AAUList)
+    # idxs = np.searchsorted(adjMatrixIDs, AAUList)
+    idxs = np.where(np.in1d(adjMatrixIDs, AAUList))[0]
     # indexes of the precincts:
     # print('idxs', idxs)
 
@@ -616,28 +829,28 @@ def get_border_AAU_list(assignmentDF, adjMatrix, adjMatrixIDs, district):
     return border
 
 
-def get_border_AAU_List_matrix(weightsDF, assignmentDF, district):
+def get_border_AAU_List_matrix(adjMatrix, adjMatrixIDs, assignmentDF, district):
 
     # get list of AAUs
     AAUList = assignmentDF[assignmentDF['District'] == district].index.tolist()
 
     # get indices of AAUs
-    idxs = np.searchsorted(weightsDF.id_order, AAUList)
+    idxs = np.where(np.in1d(adjMatrixIDs, AAUList))[0]
 
-    mat = weightsDF.sparse.tolil()
+    # # Convert sparse matrix to LIL format for efficient row operations
+    # mat = weightsDF.sparse.tolil()
 
-    # mat = weightsDF.sparse
-    rowadj = mat[idxs, :]
+    # Zero out the columns corresponding to the AAUs in the district
+    adjMatrix[idxs, idxs] = 0
 
-    rowadj[:, idxs] = 0
+    # Sum the rows to find border AAUs
+    row_sums = adjMatrix[idxs].sum(axis=1).A1  # .A1 converts to a flat array
 
-    flat_list = [item for sublist in rowadj[:, :].sum(axis=1).tolist() for item in sublist]
+    # Get indices of non-zero rows
+    border_indices = np.nonzero(row_sums)[0]
 
-    indices = np.nonzero(flat_list)
-    indices = indices[0].tolist()
-
-    # get the actual indices
-    list_of_border_AAUs = [AAUList[i] for i in indices]
+    # Get the actual indices of border AAUs
+    list_of_border_AAUs = [AAUList[i] for i in border_indices]
 
     return list_of_border_AAUs
 
@@ -792,21 +1005,30 @@ def shift_original(assignedDF, idealPop, weightsDF, population_column):
 
     random.shuffle(precinctList)
 
+    # Precompute district populations
+    district_pops = assignedDFTemp.groupby('District')[population_column].sum().to_dict()
+
+    # Build dictionaries for quick lookups
+    geoid_to_district = assignedDFTemp.set_index('GEOID')['District'].to_dict()
+    precinct_populations = assignedDFTemp[population_column].to_dict()
+
     # iterate over the randomly sorted precincts until a potential shift is found. then break
     for precinct in precinctList:
 
-        aPrecinctIdx = precinct
-        aPrecinctID = assignedDFTemp.loc[aPrecinctIdx, 'GEOID']
+        aPrecinctID = assignedDFTemp.loc[precinct, 'GEOID']
 
-        district = assignedDFTemp.loc[aPrecinctID, 'District']
-        precinctDistrictPop = getDistrictPopulation(district, assignedDFTemp,population_column=population_column)
+        # district = assignedDFTemp.loc[aPrecinctID, 'District']
+        district = geoid_to_district.get(aPrecinctID)
+        precinctDistrictPop = district_pops.get(district)
+        # precinctDistrictPop = getDistrictPopulation(district, assignedDFTemp, population_column=population_column)
 
-        theNeighbors = list(weightsDF[aPrecinctID].keys())
-
-        neighborsInDifferentDistrict = assignedDFTemp[
-            assignedDFTemp['GEOID'].isin(theNeighbors)]
-        neighborsInDifferentDistrict = \
-            neighborsInDifferentDistrict[neighborsInDifferentDistrict['District'] != district]['GEOID'].tolist()
+        # Get neighbors of the precinct
+        neighbors = weightsDF.neighbors.get(aPrecinctID, [])
+        # Filter neighbors that are in a different district
+        neighborsInDifferentDistrict = [
+            neighbor for neighbor in neighbors
+            if geoid_to_district.get(neighbor) and geoid_to_district[neighbor] != district
+        ]
 
         if neighborsInDifferentDistrict:
             # Now shuffle them to create a random ordering
@@ -817,7 +1039,8 @@ def shift_original(assignedDF, idealPop, weightsDF, population_column):
             for neighbor in neighborsInDifferentDistrict:
                 #             neighborDistrictPop = getDistrictPopulation(neighborDistrictRow['District'], assignedDFTemp)
                 neighborDistrict = assignedDFTemp.loc[neighbor]['District']
-                neighborDistrictPop = getDistrictPopulation(neighborDistrict, assignedDFTemp,population_column)
+                # neighborDistrictPop = getDistrictPopulation(neighborDistrict, assignedDFTemp, population_column)
+                neighborDistrictPop = district_pops[neighborDistrict]
 
                 precinctSmaller = None
                 if precinctDistrictPop <= idealPop and neighborDistrictPop >= idealPop:
@@ -831,12 +1054,12 @@ def shift_original(assignedDF, idealPop, weightsDF, population_column):
 
                 # Mirrows the above if...
                 if not precinctSmaller and precinctSmaller is not None:
-                    assignedDFTemp.loc[aPrecinctIdx, 'District'] = neighborDistrict
+                    assignedDFTemp.loc[precinct, 'District'] = neighborDistrict
                     return assignedDFTemp
     return assignedDFTemp
 
 
-def checkDistrictContiguity(districtNum,districtAssignmentDF):
+def checkDistrictContiguity(districtAssignmentDF, weightsDF):
     '''
     Given a district number and a district assignment GEODataFrame,
     reports back on the
@@ -851,48 +1074,104 @@ def checkDistrictContiguity(districtNum,districtAssignmentDF):
     a list of GEOIDs that cause the discontiguity which can be used for repair
     '''
 
-    # note: adding a warning filter here as otherwise everytime pysal finds an island it prints a warning
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        # Get a DataFrame for the district we wish to examine.
-        aDistrictDF = districtAssignmentDF[districtAssignmentDF['District'] == districtNum]
+    # # note: adding a warning filter here as otherwise everytime pysal finds an island it prints a warning
+    # with warnings.catch_warnings():
+    #     warnings.simplefilter("ignore")
+    #     # Get a DataFrame for the district we wish to examine.
+    #     aDistrictDF = districtAssignmentDF[districtAssignmentDF['District'] == districtNum]
 
-        w_df = lp.weights.Rook.from_dataframe(aDistrictDF)
+    #     w_df = lp.weights.Rook.from_dataframe(aDistrictDF)
 
-        if w_df.n_components == 1: # Every unit is reachable!!
-            return ([],True)
-        else: # Not every unit is reachable, so not contiguous; return the IDs
+    #     if w_df.n_components == 1: # Every unit is reachable!!
+    #         return ([],True)
+    #     else: # Not every unit is reachable, so not contiguous; return the IDs
 
-            # if we have more than one component, we need to add all smaller components to the repair list
-            # first, identify the largest component
+    #         # if we have more than one component, we need to add all smaller components to the repair list
+    #         # first, identify the largest component
 
-            u, count = np.unique(w_df.component_labels, return_counts=True)
+    #         u, count = np.unique(w_df.component_labels, return_counts=True)
 
-            count_sort_ind = np.argsort(-count)
+    #         count_sort_ind = np.argsort(-count)
 
-            # now, the first count_sort_ind has the component with the largest number of units. we can use the rest to be added to the repair list
-            toReturn = []
-            largest_component_label = u[count_sort_ind][0]
-            smaller_component_index = np.where(w_df.component_labels != largest_component_label)
+    #         # now, the first count_sort_ind has the component with the largest number of units. we can use the rest to be added to the repair list
+    #         toReturn = []
+    #         largest_component_label = u[count_sort_ind][0]
+    #         smaller_component_index = np.where(w_df.component_labels != largest_component_label)
 
-            # for each district in the non-connected components, add them to the repair list
-            for i, ix in enumerate(smaller_component_index[0]):
-                # print((aDistrictDF.index[i], aDistrictDF.iloc[ix]['GEOID']))
-                toReturn.append(aDistrictDF.iloc[ix]['GEOID'])
+    #         # for each district in the non-connected components, add them to the repair list
+    #         for i, ix in enumerate(smaller_component_index[0]):
+    #             # print((aDistrictDF.index[i], aDistrictDF.iloc[ix]['GEOID']))
+    #             toReturn.append(aDistrictDF.iloc[ix]['GEOID'])
 
-            return (toReturn,False) #np.where(connectiv[0,:] ==0)[1] # list(connectiv[1])
+    #         return (toReturn,False) #np.where(connectiv[0,:] ==0)[1] # list(connectiv[1])
+    district_precincts = set(districtAssignmentDF.index.tolist())
+    
+    if len(district_precincts) <= 1:
+        # If there's only one precinct, it's trivially contiguous
+        return ([], True)
+
+    # Initialize variables
+    visited = set()
+    connected_components = []
+
+    # Iterate over all precincts in the district to find connected components
+    for precinct in district_precincts:
+        if precinct not in visited:
+            # Start a new connected component
+            component = set()
+            stack = [precinct]
+
+            # Perform DFS to find all precincts in this connected component
+            while stack:
+                current_precinct = stack.pop()
+                if current_precinct not in visited:
+                    visited.add(current_precinct)
+                    component.add(current_precinct)
+                    neighbors = set(weightsDF.neighbors.get(current_precinct, []))  # Convert to set
+                    # Add unvisited neighbors that are in the same district
+                    unvisited_neighbors = district_precincts.intersection(neighbors) - visited
+                    stack.extend(unvisited_neighbors)
+            # Add the found component to the list
+            connected_components.append(component)
 
 
-def checkPlanContiguity(anAssignmentDF,districtList):
+    if len(connected_components) == 1:
+        # All precincts are connected
+        return ([], True)
+    else:
+        # District is not contiguous
+        # Identify the largest connected component
+        largest_component = max(connected_components, key=len)
+        # Precincts not in the largest component need to be repaired
+        precincts_to_repair = district_precincts - largest_component
+        return (list(precincts_to_repair), False)
+
+
+def checkPlanContiguity(assignmentDF,districtList, weightsDF):
     '''
     Checks the contiguity of the entire plan, i.e., for all districts
     :param anAssignmentDF: a GeoDataFrame with the current precinct-district assignments
     :param districtList: the list of district IDs
     :return: True if all districts are contiguous, False otherwise
     '''
+    # for district in districtList:
+    #     connectiv = checkDistrictContiguity(district,anAssignmentDF)
+    #     if connectiv[1] is False:
+    #         return False
+    # return True
+    district_groups = assignmentDF.groupby('District')
+
+    # Create a dictionary mapping district numbers to their DataFrame slices
+    district_dict = {district_num: group for district_num, group in district_groups}
+
+
+    # return True
     for district in districtList:
-        connectiv = checkDistrictContiguity(district,anAssignmentDF)
-        if connectiv[1] is False:
+            # Access the DataFrame for a specific district
+        district_df = district_dict.get(district, pd.DataFrame())  # Default to empty DataFrame if not found
+        _, is_contiguous = checkDistrictContiguity(district_df, weightsDF=weightsDF)
+        # is_contiguous = checkDistrictContiguity(district_df, weightsDF=weightsDF)
+        if not is_contiguous:
             return False
     return True
 
@@ -967,14 +1246,13 @@ def shiftWhile(toShiftDF,idealPop,maxPop,minPop, topMaxPerCent,bottomMinPerCent,
                     local_count_shift += 1
                     count += 1
 
-                contiguous = checkPlanContiguity(tempDF,
-                                                 districtList)
+                contiguous = checkPlanContiguity(tempDF, districtList, weightsDF)
 
                 # If we get here, contiguous == False
                 while not contiguous:
                     (tempDF, oldDF) = repairFor(tempDF, districtList, weightsDF, verbose, population_column)
 
-                    contiguous = checkPlanContiguity(tempDF,districtList)
+                    contiguous = checkPlanContiguity(tempDF,districtList, weightsDF)
             else:
                 tempDF = shift(toShiftDF, idealPop, minPop, maxPop, weightsDF, Wmatrix, ids, population_column,
                                only_nonideal_population_districts=False,
@@ -989,7 +1267,7 @@ def shiftWhile(toShiftDF,idealPop,maxPop,minPop, topMaxPerCent,bottomMinPerCent,
         print('District populations: {}'.format(getDistrictPops(toShiftDF,districtList, population_column)))
         print('idealPop = {}, maxPop = {}, minPop = {}'.format(idealPop,maxPop,minPop))
 
-    contiguity=checkPlanContiguity(toShiftDF,districtList)
+    contiguity=checkPlanContiguity(toShiftDF,districtList, weightsDF)
 
     if verbose:
         print("Contiguous? {} Done with shiftWhile()".format(contiguity))
@@ -1130,7 +1408,7 @@ def shiftRepair(toShiftRepairDF,
             toShiftRepairDF = shiftWhile(toShiftRepairDF, idealPop, maxPop, minPoP,
                                          topMaxPerCent,
                                          bottomMinPerCent, districtList, weightsDF, verbose, population_column, remainingTime, use_original_sfsr)
-            contiguous = checkPlanContiguity(toShiftRepairDF, districtList)
+            contiguous = checkPlanContiguity(toShiftRepairDF, districtList, weightsDF)
 
             if contiguous and popSizeOK(toShiftRepairDF,idealPop,topMaxPerCent,bottomMinPerCent,districtList, population_column):  # Then we are done!!
                 done = True  # Not needed
@@ -1139,7 +1417,7 @@ def shiftRepair(toShiftRepairDF,
             while not contiguous:
                 (toShiftRepairDF, oldDF) = repairFor(toShiftRepairDF, districtList, weightsDF, verbose, population_column)
 
-                contiguous = checkPlanContiguity(toShiftRepairDF, districtList)
+                contiguous = checkPlanContiguity(toShiftRepairDF, districtList, weightsDF)
             # We are contiguous if we get here.
 
             if popSizeOK(toShiftRepairDF, idealPop, topMaxPerCent, bottomMinPerCent, districtList, population_column):
@@ -1150,7 +1428,7 @@ def shiftRepair(toShiftRepairDF,
 
         # new: if the returned assignmentDF is not contiguous and /or not within population tolerance, repeat process
         if not popSizeOK(toShiftRepairDF, idealPop, topMaxPerCent, bottomMinPerCent, districtList, population_column) or \
-            not checkPlanContiguity(toShiftRepairDF, districtList):
+            not checkPlanContiguity(toShiftRepairDF, districtList, weightsDF):
             toShiftRepairDF = seed_fill(orig_df, weightsDF, len(districtList), use_original_sfsr, population_column)
 
     # print('*****Success: Finishing shiftRepair() at {}'.format(str(datetime.datetime.now())))

@@ -376,7 +376,7 @@ def main_run(pool):
 
     congress_districts_location = 'Data/' + state_name_abbr + '/Congressional_Districts/Congressional_Districts.shp'
     if os.path.isfile(congress_districts_location):
-        congress_districts = gp.read_file(congress_districts_location)
+        congress_districts = gp.read_file(congress_districts_location, engine="pyogrio")
         # project it to the 3857 (Mercator) CRS for more accurate boundary calculations
         congress_districts = congress_districts.to_crs(epsg=3857)
     else:
